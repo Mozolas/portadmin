@@ -5,18 +5,22 @@ listening on a TCP port, tells you which project it belongs to, and kills the on
 you no longer need with a single keypress — no more `lsof -i :3000` followed by
 `kill -9`.
 
+Published Docker ports show the container that owns them instead of the runtime's
+proxy process, so a port is never just "OrbStack Helper" or "com.docker.backend".
+
 ```
 portadmin  ·  local ports at a glance
 
-  PORT    PROJECT              COMMAND                        PID     UPTIME
- ─────── ──────────────────── ────────────────────────────── ─────── ─────────
-  3000    storefront           next dev                       48213   1m30s
-  4000    @acme/api            node --enable-source-maps …    53840   20h44m
-  5432    postgres             postgres -D /usr/local/var/…   1188    2d1h
-  5173    admin-dashboard      vite                           61207   12m04s
+  PORT    PROJECT              COMMAND                                    PID     UPTIME
+ ─────── ──────────────────── ────────────────────────────────────────── ─────── ─────────
+  3000    storefront           next dev                                   48213   1m30s
+  4000    @acme/api            node --enable-source-maps dist/main.js     53840   20h44m
+  5173    admin-dashboard      vite                                       61207   12m04s
+  5432    shop-stack           docker: shop-postgres · postgres:16        1188    2d1h
+  6379    shop-stack           docker: shop-redis · redis:7               1188    2d1h
 
-SIGTERM sent to storefront (PID 48213) — press again within 2s for SIGKILL.
-↑/↓ or j/k move · enter/x kill (again within 2s = SIGKILL) · r refresh · q quit
+Stopped container shop-redis.
+↑/↓ or j/u move · k/enter/x kill (again within 2s = force) · r refresh · q quit
 ```
 
 ## Install
@@ -44,17 +48,39 @@ go build -o portadmin .
 
 `portadmin` takes no flags and needs no configuration — just run it.
 
-| Key             | Action                                                     |
-| --------------- | ---------------------------------------------------------- |
-| `↑` / `↓`       | Move the selection                                          |
-| `j` / `k`       | Move down / up (vim style)                                  |
-| `enter` or `x`  | Send `SIGTERM` to the selected process                      |
-| `enter` / `x` again within 2s | Escalate to `SIGKILL` for the same process    |
-| `r`             | Refresh now                                                 |
-| `q` / `esc`     | Quit                                                        |
+| Key                     | Action                                                          |
+| ----------------------- | --------------------------------------------------------------- |
+| `↑` / `↓`               | Move the selection                                                |
+| `j` / `u`               | Move down / up                                                    |
+| `g` / `G` (`home`/`end`)| Jump to the first / last row                                      |
+| `k`, `enter` or `x`     | Stop the selected row: `SIGTERM` for a process, `docker stop` for a container |
+| the same key again within 2s | Escalate to `SIGKILL` / `docker kill`                        |
+| `r`                     | Refresh now                                                       |
+| `q` / `esc`             | Quit                                                              |
 
 The table refreshes automatically every 2 seconds, and the selection stays on the
 same process across refreshes as long as it is still listening.
+
+Killing a container never signals the host process holding the port — that
+process belongs to the container runtime, and signalling it would take down every
+other container with it.
+
+## Docker containers
+
+If a local Docker engine is reachable, `portadmin` asks it which containers
+publish which ports and rewrites those rows:
+
+- **PROJECT** is the Compose project (`com.docker.compose.project`), or the
+  container name for containers started outside Compose;
+- **COMMAND** shows `docker: <container> · <image>`;
+- **UPTIME** is how long the container has been running, not how long the
+  runtime's proxy process has been up;
+- published ports with no visible host process still get a row, with `-` in the
+  PID column.
+
+The engine socket is found via `DOCKER_HOST` or the usual locations of Docker
+Desktop, OrbStack, Colima, Rancher Desktop and plain `dockerd`. No Docker means
+no container rows — everything else works as before.
 
 ## How the project name is resolved
 
@@ -78,7 +104,7 @@ Processes running from `/` — typically system daemons — show no project name
 ## Development
 
 ```sh
-go test ./...   # unit tests for port parsing, project names, formatting and signals
+go test ./...   # port parsing, project names, formatting, signals, Docker API and UI behaviour
 go vet ./...
 ```
 

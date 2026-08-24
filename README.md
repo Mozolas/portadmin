@@ -35,6 +35,16 @@ Make sure `$(go env GOPATH)/bin` is on your `PATH`, then run:
 portadmin
 ```
 
+Pinning a version works too:
+
+```sh
+go install github.com/Mozolas/portadmin@v0.1.0
+```
+
+Prebuilt binaries for macOS and Linux (amd64 and arm64) are attached to every
+[release](https://github.com/Mozolas/portadmin/releases). After unpacking one on
+macOS, clear the quarantine flag with `xattr -d com.apple.quarantine portadmin`.
+
 Or build from a clone:
 
 ```sh
@@ -104,9 +114,33 @@ Processes running from `/` — typically system daemons — show no project name
 ## Development
 
 ```sh
-go test ./...   # port parsing, project names, formatting, signals, Docker API and UI behaviour
+go test ./...                            # port parsing, project names, formatting, signals, Docker API and UI
 go vet ./...
+.github/scripts/next-version_test.sh     # the release versioning rules
 ```
+
+## Releases
+
+Every push to `main` runs the tests on Linux and macOS and then releases
+automatically. The version is derived from the commit subjects since the last
+tag:
+
+| Commit subject                          | Effect on `v0.4.1` |
+| --------------------------------------- | ------------------- |
+| `feat: …`                               | `v0.5.0`            |
+| `fix: …`, `perf: …`, `refactor: …`      | `v0.4.2`            |
+| anything else without a known prefix    | `v0.4.2`            |
+| `docs: …`, `chore: …`, `ci: …`, `test: …`, `style: …`, `build: …` | no release |
+| `feat!: …` or a `BREAKING CHANGE:` trailer | `v0.5.0` while below 1.0, `v1.0.0`-style major bump after |
+
+Below `v1.0.0` a breaking change raises the minor, as semver intends: the major
+stays at zero until the tool is declared stable. Add `[skip release]` to a commit
+message to publish nothing at all.
+
+A release builds `darwin/amd64`, `darwin/arm64`, `linux/amd64` and `linux/arm64`
+with the version stamped into the binary (`portadmin --version`), attaches the
+archives and their SHA-256 checksums, and writes release notes from the commit
+subjects.
 
 ## License
 

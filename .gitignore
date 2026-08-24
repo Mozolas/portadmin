@@ -1,0 +1,7 @@
+# Build output
+/portadmin
+/dist/
+
+# Go
+*.test
+*.out

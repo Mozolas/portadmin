@@ -42,8 +42,13 @@ go install github.com/Mozolas/portadmin@v0.1.0
 ```
 
 Prebuilt binaries for macOS and Linux (amd64 and arm64) are attached to every
-[release](https://github.com/Mozolas/portadmin/releases). After unpacking one on
-macOS, clear the quarantine flag with `xattr -d com.apple.quarantine portadmin`.
+[release](https://github.com/Mozolas/portadmin/releases):
+
+```sh
+tar -xzf portadmin_v0.1.1_darwin_arm64.tar.gz
+xattr -d com.apple.quarantine portadmin   # macOS only
+mv portadmin ~/.local/bin/                # or anywhere on your PATH
+```
 
 Or build from a clone:
 

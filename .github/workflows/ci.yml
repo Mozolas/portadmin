@@ -94,7 +94,9 @@ jobs:
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
               go build -trimpath -ldflags "-s -w -X main.version=$VERSION" -o "$out/portadmin" .
             cp README.md LICENSE "$out/"
-            tar -czf "$out.tar.gz" -C dist "$(basename "$out")"
+            # Pack the contents, not the directory: unpacking leaves ./portadmin
+            # ready to move onto the PATH.
+            tar -czf "$out.tar.gz" -C "$out" .
             rm -rf "$out"
           done
 

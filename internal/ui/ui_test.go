@@ -1,25 +1,48 @@
 package ui
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/Mozolas/portadmin/internal/docker"
 	"github.com/Mozolas/portadmin/internal/portscan"
 )
+
+type fakeDocker struct {
+	containers []docker.Container
+	calls      []string
+	stopErr    error
+}
+
+func (f *fakeDocker) Containers(context.Context) ([]docker.Container, error) {
+	return f.containers, nil
+}
+
+func (f *fakeDocker) Stop(_ context.Context, id string) error {
+	f.calls = append(f.calls, "stop:"+id)
+	return f.stopErr
+}
+
+func (f *fakeDocker) Kill(_ context.Context, id string) error {
+	f.calls = append(f.calls, "kill:"+id)
+	return nil
+}
 
 func testModel(t *testing.T) (model, *[]string) {
 	t.Helper()
 
 	var calls []string
-	m := newModel()
-	m.terminate = func(pid int32) error {
+	m := newModel(nil)
+	m.terminate = func(int32) error {
 		calls = append(calls, "TERM")
 		return nil
 	}
-	m.kill = func(pid int32) error {
+	m.kill = func(int32) error {
 		calls = append(calls, "KILL")
 		return nil
 	}
@@ -36,6 +59,33 @@ func sampleListeners() []portscan.Listener {
 	}
 }
 
+func containerListener() portscan.Listener {
+	return portscan.Listener{
+		Port:          8080,
+		Project:       "zero-waste",
+		Command:       "docker: zero-waste-keycloak · quay.io/keycloak/keycloak:26.0",
+		ContainerID:   "49a5e1d8e0e0",
+		ContainerName: "zero-waste-keycloak",
+		Uptime:        12 * time.Hour,
+	}
+}
+
+// press sends a key and runs the command it produced, returning both.
+func press(t *testing.T, m model, key tea.KeyMsg) (model, tea.Msg) {
+	t.Helper()
+
+	next, cmd := m.Update(key)
+	m = next.(model)
+	if cmd == nil {
+		return m, nil
+	}
+	return m, cmd()
+}
+
+func runes(s string) tea.KeyMsg {
+	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+}
+
 func TestViewRendersColumnsAndRows(t *testing.T) {
 	m, _ := testModel(t)
 	m = m.applyScan(listenersMsg{listeners: sampleListeners()})
@@ -45,6 +95,21 @@ func TestViewRendersColumnsAndRows(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view is missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestViewRendersContainerRowWithoutPID(t *testing.T) {
+	m, _ := testModel(t)
+	m = m.applyScan(listenersMsg{listeners: []portscan.Listener{containerListener()}})
+
+	view := m.View()
+	for _, want := range []string{"8080", "zero-waste", "zero-waste-keycloak", "12h00m"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view is missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, " 0 ") {
+		t.Fatalf("container row should not show PID 0:\n%s", view)
 	}
 }
 
@@ -64,38 +129,46 @@ func TestApplyScanKeepsCursorOnTheSameProcess(t *testing.T) {
 
 func TestApplyScanReportsScanError(t *testing.T) {
 	m, _ := testModel(t)
-	m = m.applyScan(listenersMsg{err: errScan{}})
+	m = m.applyScan(listenersMsg{err: errors.New("permission denied")})
 
 	if m.statusKind != statusError || !strings.Contains(m.status, "permission denied") {
 		t.Fatalf("status = %q (kind %v), want a scan error", m.status, m.statusKind)
 	}
 }
 
-type errScan struct{}
-
-func (errScan) Error() string { return "permission denied" }
-
-func TestEnterSendsSIGTERMThenSIGKILL(t *testing.T) {
+func TestKillKeySendsSIGTERMThenSIGKILL(t *testing.T) {
 	m, calls := testModel(t)
 	m = m.applyScan(listenersMsg{listeners: sampleListeners()})
 
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = next.(model)
+	m, msg := press(t, m, runes("k"))
 	if len(*calls) != 1 || (*calls)[0] != "TERM" {
 		t.Fatalf("calls = %v, want one SIGTERM", *calls)
 	}
-	if !strings.Contains(m.status, "SIGTERM") {
-		t.Fatalf("status = %q, want a SIGTERM message", m.status)
+	if result, ok := msg.(killResultMsg); !ok || !strings.Contains(result.action, "SIGTERM") {
+		t.Fatalf("msg = %#v, want a SIGTERM result", msg)
 	}
 
 	// Second press within the escalation window.
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = next.(model)
+	m, msg = press(t, m, runes("k"))
 	if len(*calls) != 2 || (*calls)[1] != "KILL" {
 		t.Fatalf("calls = %v, want SIGTERM then SIGKILL", *calls)
 	}
-	if !strings.Contains(m.status, "SIGKILL") {
-		t.Fatalf("status = %q, want a SIGKILL message", m.status)
+	if result, ok := msg.(killResultMsg); !ok || !strings.Contains(result.action, "SIGKILL") {
+		t.Fatalf("msg = %#v, want a SIGKILL result", msg)
+	}
+}
+
+func TestEnterAndXAlsoKill(t *testing.T) {
+	for _, key := range []tea.KeyMsg{{Type: tea.KeyEnter}, runes("x")} {
+		m, calls := testModel(t)
+		m = m.applyScan(listenersMsg{listeners: sampleListeners()})
+
+		if _, msg := press(t, m, key); msg == nil {
+			t.Fatalf("key %v produced no kill", key)
+		}
+		if len(*calls) != 1 {
+			t.Fatalf("key %v: calls = %v, want one signal", key, *calls)
+		}
 	}
 }
 
@@ -103,17 +176,31 @@ func TestSecondPressAfterWindowSendsSIGTERMAgain(t *testing.T) {
 	m, calls := testModel(t)
 	m = m.applyScan(listenersMsg{listeners: sampleListeners()})
 
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = next.(model)
+	m, _ = press(t, m, runes("k"))
 
 	base := m.now()
 	m.now = func() time.Time { return base.Add(3 * time.Second) }
 
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m = next.(model)
-
+	m, _ = press(t, m, runes("k"))
 	if len(*calls) != 2 || (*calls)[1] != "TERM" {
 		t.Fatalf("calls = %v, want two SIGTERMs", *calls)
+	}
+}
+
+func TestJAndUMoveTheSelection(t *testing.T) {
+	m, _ := testModel(t)
+	m = m.applyScan(listenersMsg{listeners: sampleListeners()})
+
+	next, _ := m.Update(runes("j"))
+	m = next.(model)
+	if selected, _ := m.selected(); selected.PID != 222 {
+		t.Fatalf("after j selected PID %d, want 222", selected.PID)
+	}
+
+	next, _ = m.Update(runes("u"))
+	m = next.(model)
+	if selected, _ := m.selected(); selected.PID != 111 {
+		t.Fatalf("after u selected PID %d, want 111", selected.PID)
 	}
 }
 
@@ -127,20 +214,57 @@ func TestKillTargetsTheSelectedRow(t *testing.T) {
 		return nil
 	}
 
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
+	next, _ := m.Update(runes("j"))
 	m = next.(model)
-	next, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
-	m = next.(model)
+	press(t, m, runes("k"))
 
 	if killed != 222 {
 		t.Fatalf("killed PID %d, want 222 (second row after moving down with j)", killed)
 	}
 }
 
+func TestContainerRowIsStoppedThroughDockerNotSignalled(t *testing.T) {
+	m, calls := testModel(t)
+	engine := &fakeDocker{}
+	m.docker = engine
+	m = m.applyScan(listenersMsg{listeners: []portscan.Listener{containerListener()}})
+
+	m, msg := press(t, m, runes("k"))
+	if len(engine.calls) != 1 || engine.calls[0] != "stop:49a5e1d8e0e0" {
+		t.Fatalf("docker calls = %v, want a stop", engine.calls)
+	}
+	if len(*calls) != 0 {
+		t.Fatalf("signals = %v, want none: killing a container must not signal the host proxy", *calls)
+	}
+	if result, ok := msg.(killResultMsg); !ok || !strings.Contains(result.target, "zero-waste-keycloak") {
+		t.Fatalf("msg = %#v, want a result naming the container", msg)
+	}
+
+	// Second press escalates to docker kill.
+	m, _ = press(t, m, runes("k"))
+	if len(engine.calls) != 2 || engine.calls[1] != "kill:49a5e1d8e0e0" {
+		t.Fatalf("docker calls = %v, want stop then kill", engine.calls)
+	}
+}
+
+func TestContainerStopErrorIsReported(t *testing.T) {
+	m, _ := testModel(t)
+	m.docker = &fakeDocker{stopErr: errors.New("no such container")}
+	m = m.applyScan(listenersMsg{listeners: []portscan.Listener{containerListener()}})
+
+	m, msg := press(t, m, runes("k"))
+	next, _ := m.Update(msg)
+	m = next.(model)
+
+	if m.statusKind != statusError || !strings.Contains(m.status, "no such container") {
+		t.Fatalf("status = %q (kind %v), want the docker error", m.status, m.statusKind)
+	}
+}
+
 func TestQuitKey(t *testing.T) {
 	m, _ := testModel(t)
 
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	_, cmd := m.Update(runes("q"))
 	if cmd == nil {
 		t.Fatal("expected a quit command")
 	}

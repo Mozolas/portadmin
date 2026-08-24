@@ -2,14 +2,17 @@
 package ui
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/Mozolas/portadmin/internal/docker"
 	"github.com/Mozolas/portadmin/internal/portscan"
 )
 
@@ -31,6 +34,20 @@ type listenersMsg struct {
 
 type tickMsg time.Time
 
+type killResultMsg struct {
+	target string
+	action string
+	err    error
+}
+
+// dockerControl is the slice of the Docker API the UI needs; it is an
+// interface so the model can be tested without an engine.
+type dockerControl interface {
+	Containers(ctx context.Context) ([]docker.Container, error)
+	Stop(ctx context.Context, id string) error
+	Kill(ctx context.Context, id string) error
+}
+
 type statusKind int
 
 const (
@@ -46,8 +63,10 @@ type model struct {
 	status     string
 	statusKind statusKind
 
-	lastKillPID int32
+	lastKillKey string
 	lastKillAt  time.Time
+
+	docker dockerControl
 
 	// Injected so the model can be tested without signalling real processes.
 	terminate func(int32) error
@@ -60,13 +79,18 @@ type model struct {
 
 // Run starts the TUI.
 func Run() error {
-	m := newModel()
+	var engine dockerControl
+	if client := docker.New(); client != nil {
+		engine = client
+	}
+
+	m := newModel(engine)
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
 }
 
-func newModel() model {
+func newModel(engine dockerControl) model {
 	t := table.New(
 		table.WithColumns(columns(100)),
 		table.WithFocused(true),
@@ -85,12 +109,19 @@ func newModel() model {
 		Bold(true)
 	t.SetStyles(s)
 
+	// k is the kill key, so vertical movement uses j/u next to the arrows.
+	t.KeyMap.LineUp = key.NewBinding(key.WithKeys("up", "u"), key.WithHelp("↑/u", "up"))
+	t.KeyMap.LineDown = key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("↓/j", "down"))
+	// u now moves one line up, so half-page scrolling keeps only its ctrl variant.
+	t.KeyMap.HalfPageUp = key.NewBinding(key.WithKeys("ctrl+u"), key.WithHelp("ctrl+u", "½ page up"))
+
 	return model{
 		table:      t,
 		status:     "Scanning listening ports…",
 		statusKind: statusInfo,
 		width:      100,
 		height:     24,
+		docker:     engine,
 		terminate:  portscan.Terminate,
 		kill:       portscan.Kill,
 		now:        time.Now,
@@ -121,12 +152,20 @@ func columns(width int) []table.Column {
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(scanCmd(), tickCmd())
+	return tea.Batch(m.scanCmd(), tickCmd())
 }
 
-func scanCmd() tea.Cmd {
+func (m model) scanCmd() tea.Cmd {
+	engine := m.docker
 	return func() tea.Msg {
-		listeners, err := portscan.Scan()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		var src portscan.ContainerSource
+		if engine != nil {
+			src = engine
+		}
+		listeners, err := portscan.ScanWithContainers(ctx, src)
 		return listenersMsg{listeners: listeners, err: err}
 	}
 }
@@ -149,10 +188,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		return m, tea.Batch(scanCmd(), tickCmd())
+		return m, tea.Batch(m.scanCmd(), tickCmd())
 
 	case listenersMsg:
 		return m.applyScan(msg), nil
+
+	case killResultMsg:
+		if msg.err != nil {
+			m.status = fmt.Sprintf("%s %s failed: %v", msg.action, msg.target, msg.err)
+			m.statusKind = statusError
+			return m, nil
+		}
+		m.status = fmt.Sprintf("%s %s.", msg.action, msg.target)
+		m.statusKind = statusOK
+		return m, m.scanCmd()
 
 	case tea.KeyMsg:
 		switch msg.String() {
@@ -161,8 +210,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			m.status = "Refreshing…"
 			m.statusKind = statusInfo
-			return m, scanCmd()
-		case "enter", "x":
+			return m, m.scanCmd()
+		case "enter", "k", "x":
 			return m.killSelected()
 		}
 	}
@@ -194,7 +243,7 @@ func (m model) applyScan(msg listenersMsg) model {
 			strconv.FormatUint(uint64(l.Port), 10),
 			portscan.Truncate(displayProject(l), 22),
 			portscan.Truncate(l.Command, commandWidth(m.table.Columns())),
-			strconv.FormatInt(int64(l.PID), 10),
+			displayPID(l),
 			portscan.FormatUptime(l.Uptime),
 		})
 	}
@@ -220,6 +269,13 @@ func commandWidth(cols []table.Column) int {
 	return cols[2].Width
 }
 
+func displayPID(l portscan.Listener) string {
+	if l.PID == 0 {
+		return "-"
+	}
+	return strconv.FormatInt(int64(l.PID), 10)
+}
+
 func displayProject(l portscan.Listener) string {
 	if l.Project == "" {
 		return "-"
@@ -235,6 +291,8 @@ func (m model) selected() (portscan.Listener, bool) {
 	return m.listeners[cursor], true
 }
 
+// killSelected stops the selected row: SIGTERM for a host process, docker stop
+// for a container. Pressing again within two seconds escalates to SIGKILL.
 func (m model) killSelected() (tea.Model, tea.Cmd) {
 	target, ok := m.selected()
 	if !ok {
@@ -242,29 +300,65 @@ func (m model) killSelected() (tea.Model, tea.Cmd) {
 	}
 
 	now := m.now()
-	if portscan.ShouldEscalate(m.lastKillPID, m.lastKillAt, target.PID, now) {
-		if err := m.kill(target.PID); err != nil {
-			m.status = fmt.Sprintf("SIGKILL to PID %d failed: %v", target.PID, err)
-			m.statusKind = statusError
-			return m, nil
-		}
-		m.status = fmt.Sprintf("SIGKILL sent to %s (PID %d, port %d).", displayProject(target), target.PID, target.Port)
-		m.statusKind = statusOK
-		m.lastKillPID = 0
+	escalate := portscan.ShouldEscalate(m.lastKillKey, target.Key(), m.lastKillAt, now)
+
+	if escalate {
+		m.lastKillKey = ""
 		m.lastKillAt = time.Time{}
-		return m, scanCmd()
+	} else {
+		m.lastKillKey = target.Key()
+		m.lastKillAt = now
 	}
 
-	if err := m.terminate(target.PID); err != nil {
-		m.status = fmt.Sprintf("SIGTERM to PID %d failed: %v", target.PID, err)
-		m.statusKind = statusError
-		return m, nil
+	if target.IsContainer() {
+		if escalate {
+			m.status = fmt.Sprintf("Killing container %s…", target.ContainerName)
+		} else {
+			m.status = fmt.Sprintf("Stopping container %s… (press again within 2s to kill it)", target.ContainerName)
+		}
+		m.statusKind = statusWarn
+		return m, m.stopContainerCmd(target, escalate)
 	}
-	m.lastKillPID = target.PID
-	m.lastKillAt = now
-	m.status = fmt.Sprintf("SIGTERM sent to %s (PID %d) — press again within 2s for SIGKILL.", displayProject(target), target.PID)
+
+	if escalate {
+		m.status = fmt.Sprintf("Sending SIGKILL to %s (PID %d)…", displayProject(target), target.PID)
+	} else {
+		m.status = fmt.Sprintf("Sending SIGTERM to %s (PID %d)… (press again within 2s for SIGKILL)", displayProject(target), target.PID)
+	}
 	m.statusKind = statusWarn
-	return m, scanCmd()
+	return m, m.signalCmd(target, escalate)
+}
+
+func (m model) signalCmd(target portscan.Listener, escalate bool) tea.Cmd {
+	label := fmt.Sprintf("%s (PID %d)", displayProject(target), target.PID)
+	send, action := m.terminate, "SIGTERM sent to"
+	if escalate {
+		send, action = m.kill, "SIGKILL sent to"
+	}
+
+	return func() tea.Msg {
+		return killResultMsg{target: label, action: action, err: send(target.PID)}
+	}
+}
+
+func (m model) stopContainerCmd(target portscan.Listener, escalate bool) tea.Cmd {
+	engine := m.docker
+	label := fmt.Sprintf("container %s", target.ContainerName)
+	id := target.ContainerID
+
+	return func() tea.Msg {
+		if engine == nil {
+			return killResultMsg{target: label, action: "stop", err: fmt.Errorf("docker is not available")}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		if escalate {
+			return killResultMsg{target: label, action: "Killed", err: engine.Kill(ctx, id)}
+		}
+		return killResultMsg{target: label, action: "Stopped", err: engine.Stop(ctx, id)}
+	}
 }
 
 func (m model) View() string {
@@ -282,7 +376,7 @@ func (m model) View() string {
 		status = helpStyle.Render(status)
 	}
 
-	help := helpStyle.Render("↑/↓ or j/k move · enter/x kill (again within 2s = SIGKILL) · r refresh · q quit")
+	help := helpStyle.Render("↑/↓ or j/u move · k/enter/x kill (again within 2s = force) · r refresh · q quit")
 
 	return fmt.Sprintf("%s\n\n%s\n\n%s\n%s\n", title, m.table.View(), status, help)
 }

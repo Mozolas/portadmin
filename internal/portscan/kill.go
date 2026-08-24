@@ -18,10 +18,12 @@ func signal(pid int32, sig syscall.Signal) error {
 	return syscall.Kill(int(pid), sig)
 }
 
-// ShouldEscalate reports whether killing pid now should use SIGKILL, i.e. the
-// same process was already sent a SIGTERM within EscalateWindow.
-func ShouldEscalate(lastPID int32, lastAt time.Time, pid int32, now time.Time) bool {
-	if lastPID != pid || lastAt.IsZero() {
+// ShouldEscalate reports whether killing the target identified by key should
+// escalate, i.e. the same target was already asked to stop within
+// EscalateWindow. Keys come from Listener.Key so that both host processes and
+// containers can be tracked.
+func ShouldEscalate(lastKey, key string, lastAt, now time.Time) bool {
+	if lastKey == "" || lastKey != key || lastAt.IsZero() {
 		return false
 	}
 	return now.Sub(lastAt) <= EscalateWindow

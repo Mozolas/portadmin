@@ -5,6 +5,7 @@ package portscan
 import (
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -29,6 +30,23 @@ type Listener struct {
 	Project string
 	Started time.Time
 	Uptime  time.Duration
+
+	// Set when the port is published by a Docker container.
+	ContainerID   string
+	ContainerName string
+}
+
+// IsContainer reports whether this row is a Docker container rather than a
+// plain host process.
+func (l Listener) IsContainer() bool { return l.ContainerID != "" }
+
+// Key identifies the thing a kill acts on, used to detect a second keypress on
+// the same target.
+func (l Listener) Key() string {
+	if l.ContainerID != "" {
+		return "container:" + l.ContainerID
+	}
+	return "pid:" + strconv.FormatInt(int64(l.PID), 10)
 }
 
 // Scan returns every process listening on a TCP port, sorted by port.

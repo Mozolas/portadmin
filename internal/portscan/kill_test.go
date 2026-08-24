@@ -12,21 +12,23 @@ func TestShouldEscalate(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		lastPID int32
+		lastKey string
 		lastAt  time.Time
-		pid     int32
+		key     string
 		want    bool
 	}{
-		{"no previous kill", 0, time.Time{}, 4242, false},
-		{"same process within window", 4242, now.Add(-1500 * time.Millisecond), 4242, true},
-		{"same process at window edge", 4242, now.Add(-2 * time.Second), 4242, true},
-		{"same process after window", 4242, now.Add(-2100 * time.Millisecond), 4242, false},
-		{"different process", 111, now.Add(-time.Second), 4242, false},
+		{"no previous kill", "", time.Time{}, "pid:4242", false},
+		{"same process within window", "pid:4242", now.Add(-1500 * time.Millisecond), "pid:4242", true},
+		{"same process at window edge", "pid:4242", now.Add(-2 * time.Second), "pid:4242", true},
+		{"same process after window", "pid:4242", now.Add(-2100 * time.Millisecond), "pid:4242", false},
+		{"different process", "pid:111", now.Add(-time.Second), "pid:4242", false},
+		{"same container within window", "container:abc123", now.Add(-time.Second), "container:abc123", true},
+		{"container and process with the same number", "pid:4242", now.Add(-time.Second), "container:4242", false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ShouldEscalate(tt.lastPID, tt.lastAt, tt.pid, now); got != tt.want {
+			if got := ShouldEscalate(tt.lastKey, tt.key, tt.lastAt, now); got != tt.want {
 				t.Fatalf("ShouldEscalate() = %v, want %v", got, tt.want)
 			}
 		})

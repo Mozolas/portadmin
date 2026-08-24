@@ -126,10 +126,35 @@ func (s stubSource) Containers(context.Context) ([]docker.Container, error) {
 }
 
 func TestScanWithContainersSurvivesADockerError(t *testing.T) {
-	// Docker being down must not hide the host processes.
-	listeners, err := ScanWithContainers(context.Background(), stubSource{err: errors.New("connection refused")})
-	if err != nil {
-		t.Fatalf("ScanWithContainers() error = %v, want the host listeners anyway", err)
+	hostOnly := func() ([]Listener, error) {
+		return []Listener{{PID: 53840, Port: 4000, Project: "@acme/api"}}, nil
 	}
-	_ = listeners
+
+	// Docker being down must not hide the host processes.
+	listeners, err := scanWith(context.Background(), hostOnly, stubSource{err: errors.New("connection refused")})
+	if err != nil {
+		t.Fatalf("scanWith() error = %v, want the host listeners anyway", err)
+	}
+	if len(listeners) != 1 || listeners[0].Project != "@acme/api" {
+		t.Fatalf("listeners = %+v, want the host process untouched", listeners)
+	}
+}
+
+func TestScanWithContainersWithoutDockerReturnsHostProcesses(t *testing.T) {
+	hostOnly := func() ([]Listener, error) {
+		return []Listener{{PID: 1, Port: 80}}, nil
+	}
+
+	listeners, err := scanWith(context.Background(), hostOnly, nil)
+	if err != nil || len(listeners) != 1 {
+		t.Fatalf("scanWith() = %+v, %v", listeners, err)
+	}
+}
+
+func TestScanWithContainersPropagatesScanErrors(t *testing.T) {
+	failing := func() ([]Listener, error) { return nil, errors.New("no permission") }
+
+	if _, err := scanWith(context.Background(), failing, stubSource{}); err == nil {
+		t.Fatal("expected the scan error to be reported")
+	}
 }

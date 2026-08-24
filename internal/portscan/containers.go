@@ -18,7 +18,11 @@ type ContainerSource interface {
 // published the ports, so a published port shows the container instead of the
 // runtime's proxy process.
 func ScanWithContainers(ctx context.Context, src ContainerSource) ([]Listener, error) {
-	listeners, err := Scan()
+	return scanWith(ctx, Scan, src)
+}
+
+func scanWith(ctx context.Context, scan func() ([]Listener, error), src ContainerSource) ([]Listener, error) {
+	listeners, err := scan()
 	if err != nil {
 		return nil, err
 	}

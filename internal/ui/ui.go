@@ -66,7 +66,8 @@ type model struct {
 	lastKillKey string
 	lastKillAt  time.Time
 
-	docker dockerControl
+	docker  dockerControl
+	version string
 
 	// Injected so the model can be tested without signalling real processes.
 	terminate func(int32) error
@@ -78,13 +79,14 @@ type model struct {
 }
 
 // Run starts the TUI.
-func Run() error {
+func Run(version string) error {
 	var engine dockerControl
 	if client := docker.New(); client != nil {
 		engine = client
 	}
 
 	m := newModel(engine)
+	m.version = version
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	_, err := p.Run()
 	return err
@@ -362,7 +364,11 @@ func (m model) stopContainerCmd(target portscan.Listener, escalate bool) tea.Cmd
 }
 
 func (m model) View() string {
-	title := titleStyle.Render("portadmin") + headerStyle.Render("  ·  local ports at a glance")
+	name := "portadmin"
+	if m.version != "" {
+		name += " " + m.version
+	}
+	title := titleStyle.Render(name) + headerStyle.Render("  ·  local ports at a glance")
 
 	status := m.status
 	switch m.statusKind {

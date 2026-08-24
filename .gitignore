@@ -1,6 +1,7 @@
 # Build output
 /portadmin
 /dist/
+/release-notes.md
 
 # Go
 *.test

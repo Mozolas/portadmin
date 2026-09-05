@@ -49,7 +49,8 @@ func (l Listener) Key() string {
 	return "pid:" + strconv.FormatInt(int64(l.PID), 10)
 }
 
-// Scan returns every process listening on a TCP port, sorted by port.
+// Scan returns every process listening on a TCP port, with the ports of one
+// project grouped together.
 func Scan() ([]Listener, error) {
 	conns, err := net.Connections("inet")
 	if err != nil {
@@ -89,7 +90,44 @@ func Scan() ([]Listener, error) {
 		}
 		listeners = append(listeners, l)
 	}
+	sortListeners(listeners)
 	return listeners, nil
+}
+
+// sortListeners keeps the ports of one project next to each other — a dev
+// server, its API and its database belong together — and orders the groups by
+// their lowest port, so the table still reads roughly upwards. A row without a
+// project is a group of its own rather than being clumped with the other
+// nameless ones.
+func sortListeners(listeners []Listener) {
+	lowest := map[string]uint32{}
+	for _, l := range listeners {
+		if port, seen := lowest[groupKey(l)]; !seen || l.Port < port {
+			lowest[groupKey(l)] = l.Port
+		}
+	}
+
+	sort.Slice(listeners, func(i, j int) bool {
+		a, b := listeners[i], listeners[j]
+		ka, kb := groupKey(a), groupKey(b)
+		if lowest[ka] != lowest[kb] {
+			return lowest[ka] < lowest[kb]
+		}
+		if ka != kb {
+			return ka < kb
+		}
+		if a.Port != b.Port {
+			return a.Port < b.Port
+		}
+		return a.PID < b.PID
+	})
+}
+
+func groupKey(l Listener) string {
+	if l.Project == "" {
+		return "\x00" + l.Key() + ":" + strconv.FormatUint(uint64(l.Port), 10)
+	}
+	return l.Project
 }
 
 // listeningEndpoints keeps only TCP sockets in the LISTEN state and collapses

@@ -63,6 +63,9 @@ go build -o portadmin .
 
 `portadmin` takes no flags and needs no configuration — just run it.
 
+Rows are grouped by project, so every port one project holds sits together; the
+groups themselves are ordered by their lowest port.
+
 | Key                     | Action                                                          |
 | ----------------------- | --------------------------------------------------------------- |
 | `↑` / `↓`               | Move the selection; it wraps around at both ends                  |

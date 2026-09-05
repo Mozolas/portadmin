@@ -2,7 +2,6 @@ package portscan
 
 import (
 	"context"
-	"sort"
 	"time"
 
 	"github.com/Mozolas/portadmin/internal/docker"
@@ -65,12 +64,7 @@ func mergeContainers(listeners []Listener, containers []docker.Container, now ti
 		}
 	}
 
-	sort.Slice(merged, func(i, j int) bool {
-		if merged[i].Port != merged[j].Port {
-			return merged[i].Port < merged[j].Port
-		}
-		return merged[i].PID < merged[j].PID
-	})
+	sortListeners(merged)
 	return merged
 }
 

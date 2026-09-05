@@ -71,6 +71,60 @@ func TestListeningEndpointsSortedByPortThenPID(t *testing.T) {
 	}
 }
 
+func ports(listeners []Listener) []uint32 {
+	out := make([]uint32, len(listeners))
+	for i, l := range listeners {
+		out[i] = l.Port
+	}
+	return out
+}
+
+func TestSortListenersGroupsAProjectTogether(t *testing.T) {
+	listeners := []Listener{
+		{PID: 1, Port: 3000, Project: "storefront"},
+		{PID: 2, Port: 4000, Project: "@acme/api"},
+		{PID: 3, Port: 5173, Project: "storefront"},
+		{PID: 4, Port: 5432, Project: "@acme/api"},
+	}
+
+	sortListeners(listeners)
+
+	// Both storefront ports first, because 3000 is the lowest of any group.
+	want := []uint32{3000, 5173, 4000, 5432}
+	if got := ports(listeners); !equalPorts(got, want) {
+		t.Fatalf("ports = %v, want %v", got, want)
+	}
+}
+
+func TestSortListenersLeavesNamelessRowsInPortOrder(t *testing.T) {
+	listeners := []Listener{
+		{PID: 1, Port: 8080},
+		{PID: 2, Port: 3000, Project: "storefront"},
+		{PID: 3, Port: 22},
+		{PID: 4, Port: 9000, Project: "storefront"},
+	}
+
+	sortListeners(listeners)
+
+	// The two unnamed daemons keep their own places; they are not a project.
+	want := []uint32{22, 3000, 9000, 8080}
+	if got := ports(listeners); !equalPorts(got, want) {
+		t.Fatalf("ports = %v, want %v", got, want)
+	}
+}
+
+func equalPorts(got, want []uint32) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func TestParseLsofCwds(t *testing.T) {
 	out := "p123\nfcwd\nn/Users/dev/api\np456\nfcwd\nn/Users/dev/web\n"
 

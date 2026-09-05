@@ -86,6 +86,25 @@ func TestMergeContainersAddsPublishedPortsWithoutAHostProcess(t *testing.T) {
 	}
 }
 
+func TestMergeContainersGroupsAComposeProjectTogether(t *testing.T) {
+	containers := append(testContainers(), docker.Container{
+		ID:             "cafebabe1234",
+		Name:           "zero-waste-keycloak",
+		Image:          "quay.io/keycloak/keycloak:26.0",
+		ComposeProject: "zero-waste",
+		Ports:          []uint32{8080},
+		StartedAt:      scanTime.Add(-time.Hour),
+	})
+
+	merged := mergeContainers(nil, containers, scanTime)
+
+	// The standalone redis must not sit between the two zero-waste ports.
+	want := []uint32{5432, 8080, 6379, 16379}
+	if got := ports(merged); !equalPorts(got, want) {
+		t.Fatalf("ports = %v, want %v", got, want)
+	}
+}
+
 func TestMergeContainersUsesContainerNameWithoutCompose(t *testing.T) {
 	merged := mergeContainers(nil, testContainers()[1:], scanTime)
 

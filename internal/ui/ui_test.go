@@ -127,6 +127,51 @@ func TestApplyScanKeepsCursorOnTheSameProcess(t *testing.T) {
 	}
 }
 
+func TestApplyScanKeepsTheCursorBesideAVanishedRow(t *testing.T) {
+	listeners := append(sampleListeners(), portscan.Listener{
+		PID: 333, Port: 8080, Project: "docs", Command: "mkdocs serve", Uptime: time.Minute,
+	})
+
+	m, _ := testModel(t)
+	m = m.applyScan(listenersMsg{listeners: listeners})
+	m.table.SetCursor(2)
+
+	// The selected process is killed; the cursor must stay beside it.
+	m = m.applyScan(listenersMsg{listeners: listeners[:2]})
+
+	selected, ok := m.selected()
+	if !ok || selected.PID != 222 {
+		t.Fatalf("selected = %+v (ok=%v), want PID 222, the row above the killed one", selected, ok)
+	}
+}
+
+func TestSelectionWrapsAroundTheEnds(t *testing.T) {
+	for _, keys := range []struct {
+		name     string
+		up, down tea.KeyMsg
+	}{
+		{"letters", runes("u"), runes("j")},
+		{"arrows", tea.KeyMsg{Type: tea.KeyUp}, tea.KeyMsg{Type: tea.KeyDown}},
+	} {
+		t.Run(keys.name, func(t *testing.T) {
+			m, _ := testModel(t)
+			m = m.applyScan(listenersMsg{listeners: sampleListeners()})
+
+			next, _ := m.Update(keys.up)
+			m = next.(model)
+			if selected, _ := m.selected(); selected.PID != 222 {
+				t.Fatalf("up on the first row selected PID %d, want the last row (222)", selected.PID)
+			}
+
+			next, _ = m.Update(keys.down)
+			m = next.(model)
+			if selected, _ := m.selected(); selected.PID != 111 {
+				t.Fatalf("down on the last row selected PID %d, want the first row (111)", selected.PID)
+			}
+		})
+	}
+}
+
 func TestApplyScanReportsScanError(t *testing.T) {
 	m, _ := testModel(t)
 	m = m.applyScan(listenersMsg{err: errors.New("permission denied")})

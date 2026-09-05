@@ -65,7 +65,7 @@ go build -o portadmin .
 
 | Key                     | Action                                                          |
 | ----------------------- | --------------------------------------------------------------- |
-| `↑` / `↓`               | Move the selection                                                |
+| `↑` / `↓`               | Move the selection; it wraps around at both ends                  |
 | `j` / `u`               | Move down / up                                                    |
 | `g` / `G` (`home`/`end`)| Jump to the first / last row                                      |
 | `k`, `enter` or `x`     | Stop the selected row: `SIGTERM` for a process, `docker stop` for a container |
@@ -74,7 +74,9 @@ go build -o portadmin .
 | `q` / `esc`             | Quit                                                              |
 
 The table refreshes automatically every 2 seconds, and the selection stays on the
-same process across refreshes as long as it is still listening.
+same process across refreshes as long as it is still listening. Once it stops —
+killed from here or on its own — the selection lands on the row above it rather
+than back at the top.
 
 Killing a container never signals the host process holding the port — that
 process belongs to the container runtime, and signalling it would take down every

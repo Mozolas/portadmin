@@ -216,6 +216,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter", "k", "x":
 			return m.killSelected()
 		}
+
+		if wrapped, ok := m.wrapSelection(msg); ok {
+			return wrapped, nil
+		}
 	}
 
 	var cmd tea.Cmd
@@ -223,8 +227,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// wrapSelection turns the rows into a ring: down on the last row jumps to the
+// first and up on the first jumps to the last. The table alone only clamps.
+func (m model) wrapSelection(msg tea.KeyMsg) (model, bool) {
+	last := len(m.listeners) - 1
+	if last < 1 {
+		return m, false
+	}
+
+	switch {
+	case key.Matches(msg, m.table.KeyMap.LineDown) && m.table.Cursor() == last:
+		m.table.GotoTop()
+	case key.Matches(msg, m.table.KeyMap.LineUp) && m.table.Cursor() == 0:
+		m.table.GotoBottom()
+	default:
+		return m, false
+	}
+	return m, true
+}
+
 // applyScan replaces the table contents while keeping the cursor on the same
-// process whenever it is still listening.
+// process whenever it is still listening, and beside it once it is gone.
 func (m model) applyScan(msg listenersMsg) model {
 	if msg.err != nil {
 		m.status = "Scan failed: " + msg.err.Error()
@@ -233,10 +256,11 @@ func (m model) applyScan(msg listenersMsg) model {
 	}
 
 	selected, hadSelection := m.selected()
+	previous := m.table.Cursor()
 	m.listeners = msg.listeners
 
 	rows := make([]table.Row, 0, len(msg.listeners))
-	cursor := 0
+	cursor := -1
 	for i, l := range msg.listeners {
 		if hadSelection && l.PID == selected.PID && l.Port == selected.Port {
 			cursor = i
@@ -251,9 +275,12 @@ func (m model) applyScan(msg listenersMsg) model {
 	}
 
 	m.table.SetRows(rows)
-	if cursor < len(rows) {
-		m.table.SetCursor(cursor)
+	if cursor < 0 {
+		// The selected process is gone, killed or stopped on its own: stay on
+		// the row above it instead of jumping back to the top of the table.
+		cursor = previous - 1
 	}
+	m.table.SetCursor(cursor)
 
 	if len(rows) == 0 {
 		m.status = "No processes are listening on a TCP port."
